@@ -1,137 +1,164 @@
-# Installing Docker in Termux
-This repository contains instructions on how to install Docker in [Termux](https://termux.com/), a powerful terminal emulator for Android.
+# Installing Docker in Termux (ARM64 / aarch64 guest)
+
+This fork documents a single path: **Alpine Linux aarch64** in **QEMU** on **ARM64 Termux**, then **Docker** with **linux/arm64** images. Docker runs inside the VM, not in Termux itself.
 
 # Prerequisites
-Before proceeding with the installation, make sure you have the following prerequisites:
-- An Android device with Termux installed. You can download Termux from the [F-Droid](https://f-droid.org/packages/com.termux/) app store.
+- An **aarch64** Android device with [Termux](https://termux.com/) (e.g. from [F-Droid](https://f-droid.org/packages/com.termux/)). Check with `uname -m` — it should print `aarch64`.
 - Stable internet connection.
 
-# Installation Steps
-Follow the steps below to install Docker in Termux:
-1. Open Termux on your Android device.
+The automated install uses [answerfile](answerfile). By default `DISKOPTS` installs to **`/dev/vda`** (typical for a single virtio disk). If `lsblk` shows a different device, edit the last line of `answerfile` before `setup-alpine`.
 
-2. Update and upgrade the packages by running the following command:
+# Installation steps
+
+1. Open Termux.
+
+2. Update packages:
 ```bash
 pkg update -y && pkg upgrade -y
 ```
 
-3. Install the necessary dependencies by running the following command:
+3. Install QEMU (aarch64 system emulator) and tools. If the package name changes, run `pkg search qemu-system-aarch64`:
 ```bash
-pkg install qemu-utils qemu-common qemu-system-x86_64-headless wget -y
+pkg install qemu-utils qemu-common qemu-system-aarch64-headless wget -y
 ```
 
-4. Create a seperate directory:
+4. Working directory:
 ```bash
 mkdir alpine && cd alpine
 ```
 
-5. Download Alpine Linux 3.20.2 (virt optimized) ISO:
+5. Download Alpine **3.20.2** virt ISO for **aarch64** (matches v3.20 in `answerfile`):
 ```bash
-wget http://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-virt-3.20.2-x86_64.iso
+wget http://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-virt-3.20.2-aarch64.iso
 ```
 
-6. Create disk (note it won't actually take 5GB of space, more like 500-600MB):
+6. Disk image:
 ```bash
 qemu-img create -f qcow2 alpine.img 5G
 ```
+The qcow2 file grows as needed (often on the order of hundreds of MB, not the full 5G immediately).
 
-7. Boot it up:
-Here we're using 1024MB of memory and 2 cpus
+7. Writable UEFI NVRAM (per-directory copy so boot variables can be stored):
 ```bash
-qemu-system-x86_64 -machine q35 -m 1024 -smp cpus=2 -cpu qemu64 -drive if=pflash,format=raw,read-only=on,file=$PREFIX/share/qemu/edk2-x86_64-code.fd -netdev user,id=n1,dns=8.8.8.8,hostfwd=tcp::2222-:22 -device virtio-net,netdev=n1 -cdrom alpine-virt-3.20.2-x86_64.iso -nographic alpine.img
+cp "$PREFIX/share/qemu/edk2-aarch64-vars.fd" ./edk2-aarch64-vars.fd
 ```
-> you can get number of useable cpus using `nproc` and total memory using `free -m | grep -oP '\d+' | head -n 1`
-8. Login with username ``root`` (no password)
+If firmware files are missing: `ls "$PREFIX/share/qemu" | grep edk2` — see [termux-packages](https://github.com/termux/termux-packages) or the Termux wiki for your build.
 
-9. Setup network (press Enter to use defaults):
+8. First boot from ISO (1024 MiB RAM, 2 CPUs — tune with `nproc` and `free -m` on the host):
 ```bash
-localhost:~# setup-interfaces
- Available interfaces are: eth0.
- Enter '?' for help on bridges, bonding and vlans.
- Which one do you want to initialize? (or '?' or 'done') [eth0]
- Ip address for eth0? (or 'dhcp', 'none', '?') [dhcp]
- Do you want to do any manual network configuration? [no]
+qemu-system-aarch64 \
+  -machine virt \
+  -cpu cortex-a57 \
+  -m 1024 \
+  -smp cpus=2 \
+  -drive if=pflash,format=raw,readonly=on,file=$PREFIX/share/qemu/edk2-aarch64-code.fd \
+  -drive if=pflash,format=raw,file=$PWD/edk2-aarch64-vars.fd \
+  -netdev user,id=n1,dns=8.8.8.8,hostfwd=tcp::2222-:22 \
+  -device virtio-net,netdev=n1 \
+  -drive if=none,id=cd0,format=raw,media=cdrom,readonly=on,file=$PWD/alpine-virt-3.20.2-aarch64.iso \
+  -device virtio-scsi-pci,id=scsi0 \
+  -device scsi-cd,bus=scsi0.0,drive=cd0 \
+  -drive if=none,id=hd0,file=$PWD/alpine.img,format=qcow2 \
+  -device virtio-blk-pci,drive=hd0 \
+  -boot order=d \
+  -nographic
 ```
-localhost:~# 
+You can try `-cpu max` if QEMU accepts it. If allocating more than ~4 GiB RAM fails on some devices, lower `-m`.
+
+9. Log in as `root` (no password).
+
+10. Network (accept defaults for DHCP on `eth0`):
 ```bash
+setup-interfaces
 ifup eth0
 ```
 
-10. Create an answerfile to speed up installation:
+11. Fetch [answerfile](answerfile). Replace **`YOUR_GITHUB_USER`** / **`YOUR_REPO`** with your fork (and branch if not `main`), or copy `answerfile` from a local clone:
 ```bash
-wget https://raw.githubusercontent.com/cyberkernelofficial/docker-in-termux/main/answerfile
+wget -O answerfile "https://raw.githubusercontent.com/YOUR_GITHUB_USER/YOUR_REPO/main/answerfile"
 ```
-> **NOTE:** If you see any error like this: ``wget: bad address 'gist.githubusercontent.com'``. Then run this command
+> If DNS fails inside the installer, e.g. `wget: bad address '...'`, fix resolver first, for example:
 > ```bash
 > echo -e "nameserver 192.168.1.1\nnameserver 1.1.1.1" > /etc/resolv.conf
 > ```
 
-11. Patch ``setup-disk`` to enable serial console output on boot:
-```bash
-sed -i -E 's/(local kernel_opts)=.*/\1="console=ttyS0"/' /sbin/setup-disk
-```
+12. Confirm the install disk (see prerequisites): `lsblk`. Edit `DISKOPTS` in `answerfile` if it is not `/dev/vda`.
 
-12. Run setup to install to disk
+13. Serial console for QEMU `virt` on AArch64 (often **`ttyAMA0`**):
+```bash
+sed -i -E 's/(local kernel_opts)=.*/\1="console=ttyAMA0"/' /sbin/setup-disk
+```
+If you get no login after reboot, try `console=ttyS0` instead.
+
+14. Install to disk:
 ```bash
 setup-alpine -f answerfile
 ```
 
-13. Once installation is complete, power off the VM (command ``poweroff``)
+15. `poweroff`
 
-14. Boot again without cdrom:
+16. Boot installed system (no ISO):
 ```bash
-qemu-system-x86_64 -machine q35 -m 1024 -smp cpus=2 -cpu qemu64 -drive if=pflash,format=raw,read-only=on,file=$PREFIX/share/qemu/edk2-x86_64-code.fd -netdev user,id=n1,dns=8.8.8.8,hostfwd=tcp::2222-:22 -device virtio-net,netdev=n1 -nographic alpine.img
+qemu-system-aarch64 \
+  -machine virt \
+  -cpu cortex-a57 \
+  -m 1024 \
+  -smp cpus=2 \
+  -drive if=pflash,format=raw,readonly=on,file=$PREFIX/share/qemu/edk2-aarch64-code.fd \
+  -drive if=pflash,format=raw,file=$PWD/edk2-aarch64-vars.fd \
+  -netdev user,id=n1,dns=8.8.8.8,hostfwd=tcp::2222-:22 \
+  -device virtio-net,netdev=n1 \
+  -drive if=none,id=hd0,file=$PWD/alpine.img,format=qcow2 \
+  -device virtio-blk-pci,drive=hd0 \
+  -nographic
 ```
 
-A - 
-`nano run_qemu.sh`
-In the text editor, write the following:
+**Optional — `run_qemu.sh`** (same flags as step 16; keep in the same directory as `alpine.img` and `edk2-aarch64-vars.fd`):
 ```bash
 #!/bin/bash
-qemu-system-x86_64 -machine q35 -m 1024 -smp cpus=2 -cpu qemu64 -drive if=pflash,format=raw,read-only=on,file=$PREFIX/share/qemu/edk2-x86_64-code.fd -netdev user,id=n1,dns=8.8.8.8,hostfwd=tcp::2222-:22 -device virtio-net,netdev=n1 -nographic alpine.img
+exec qemu-system-aarch64 \
+  -machine virt \
+  -cpu cortex-a57 \
+  -m 1024 \
+  -smp cpus=2 \
+  -drive if=pflash,format=raw,readonly=on,file=$PREFIX/share/qemu/edk2-aarch64-code.fd \
+  -drive if=pflash,format=raw,file=$PWD/edk2-aarch64-vars.fd \
+  -netdev user,id=n1,dns=8.8.8.8,hostfwd=tcp::2222-:22 \
+  -device virtio-net,netdev=n1 \
+  -drive if=none,id=hd0,file=$PWD/alpine.img,format=qcow2 \
+  -device virtio-blk-pci,drive=hd0 \
+  -nographic
 ```
-Save and close the file. In nano, you can do this by pressing Ctrl+X, then Y to confirm saving, and then Enter to confirm the filename.
+Then: `chmod +x run_qemu.sh` and `./run_qemu.sh`.
 
-B - chmod command: `chmod +x run_qemu.sh`
-
-C - `./run_qemu.sh`
-
-15. Update system and install docker:
+17. In the guest — DNS and Docker:
 ```bash
-
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 echo "nameserver 8.8.4.4" >> /etc/resolv.conf
 
 apk update && apk add docker
-```
-
-16. Start docker:
-```bash
 service docker start
-```
-
-17. Enable docker on boot:
-```bash
 rc-update add docker
-```
-
-18. Check docker install successfully or not:
-```bash
 docker run hello-world
 ```
 
-# Some useful keys
-- ``Ctrl+a x``: quit emulation
-- ``Ctrl+a h``: toggle QEMU console
+# Native Docker without a VM (not this fork’s focus)
+
+Docker directly in Termux usually needs **root** and a kernel with suitable **cgroups**, **namespaces**, and often **overlay** support. Many stock phone kernels are incomplete for that. The VM route above stays predictable.
+
+# Useful QEMU keys
+- `Ctrl+a` then `x`: quit emulation
+- `Ctrl+a` then `h`: QEMU console help
 
 # Usage
-Now that Docker is installed in Termux, you can start using it to manage and run containers on your Android device. Refer to the official [Docker documentation](https://docs.docker.com/) for more information on how to use Docker.
+See [Docker documentation](https://docs.docker.com/) for day-to-day container use.
 
 # Contributing
-If you encounter any issues during the installation process or have suggestions for improvements, please feel free to open an issue or submit a pull request.
+Issues and pull requests are welcome.
 
 # Acknowledgment
-- This article inspired from: https://gist.github.com/oofnikj/e79aef095cd08756f7f26ed244355d62
+- Inspired by: https://gist.github.com/oofnikj/e79aef095cd08756f7f26ed244355d62  
+- Upstream-style dual-arch guide: [cyberkernelofficial/docker-in-termux](https://github.com/cyberkernelofficial/docker-in-termux) (this fork is aarch64-only).
 
 # License
-This project is licensed under the [MIT License](LICENSE).
+[MIT License](LICENSE).
