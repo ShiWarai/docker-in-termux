@@ -1,50 +1,59 @@
-# Installing Docker in Termux (ARM64 / aarch64 guest)
+# Docker в Termux (Alpine aarch64 в QEMU)
 
-This fork documents a single path: **Alpine Linux aarch64** in **QEMU** on **ARM64 Termux**, then **Docker** with **linux/arm64** images. Docker runs inside the VM, not in Termux itself.
+Docker крутится **внутри ВМ** (Alpine aarch64), не в самом Termux. Нужен **aarch64**-телефон (`uname -m` → `aarch64`), [Termux](https://termux.com/) ([F-Droid](https://f-droid.org/packages/com.termux/)), интернет.
 
-# Prerequisites
-- An **aarch64** Android device with [Termux](https://termux.com/) (e.g. from [F-Droid](https://f-droid.org/packages/com.termux/)). Check with `uname -m` — it should print `aarch64`.
-- Stable internet connection.
+Автоустановка: [answerfile](answerfile), по умолчанию диск **`/dev/vda`** (шаг 10).
 
-The automated install uses [answerfile](answerfile). By default `DISKOPTS` installs to **`/dev/vda`** (typical for a single virtio disk). If `lsblk` shows a different device, edit the last line of `answerfile` before `setup-alpine`.
+Зеркала: при сообщении про репозиторий — `termux-change-repo`, затем `pkg update`.
 
-# Installation steps
+## Установка
 
-1. Open Termux.
+### 1. Пакеты
 
-2. Update packages:
 ```bash
 pkg update -y && pkg upgrade -y
+pkg install qemu-utils qemu-common qemu-system-aarch64-headless ovmf wget -y
 ```
 
-3. Install QEMU (aarch64 system emulator) and tools. If the package name changes, run `pkg search qemu-system-aarch64`:
+### 2. Каталог проекта
+
 ```bash
-pkg install qemu-utils qemu-common qemu-system-aarch64-headless wget -y
+mkdir alpine_arm64 && cd alpine_arm64
 ```
 
-4. Working directory:
+Дальше ISO, `alpine.img` и `edk2-aarch64-vars.fd` лежат **здесь**.
+
+### 3. ISO Alpine 3.20.x (virt, aarch64)
+
+Ветка в [answerfile](answerfile) — **v3.20**. Имя `.iso` в шаге 6 должно совпадать с файлом из шага 3 (`ls *.iso`). Пример **3.20.10**:
+
 ```bash
-mkdir alpine && cd alpine
+wget https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-virt-3.20.10-aarch64.iso
 ```
 
-5. Download Alpine **3.20.2** virt ISO for **aarch64** (matches v3.20 in `answerfile`):
-```bash
-wget http://dl-cdn.alpinelinux.org/alpine/v3.20/releases/aarch64/alpine-virt-3.20.2-aarch64.iso
-```
+### 4. Диск гостя
 
-6. Disk image:
 ```bash
 qemu-img create -f qcow2 alpine.img 5G
 ```
-The qcow2 file grows as needed (often on the order of hundreds of MB, not the full 5G immediately).
 
-7. Writable UEFI NVRAM (per-directory copy so boot variables can be stored):
+### 5. UEFI NVRAM (ovmf + 64 MiB)
+
+В `share/qemu` часто **нет** `edk2-aarch64-vars.fd`. Берём шаблон из **ovmf**, копируем в каталог проекта и **добиваем до 64 MiB** (иначе QEMU: `pflash1 … requires 67108864 bytes`):
+
 ```bash
-cp "$PREFIX/share/qemu/edk2-aarch64-vars.fd" ./edk2-aarch64-vars.fd
+cp "$PREFIX/share/edk2/aarch64/QEMU_VARS.fd" ./edk2-aarch64-vars.fd
+truncate -s 64M ./edk2-aarch64-vars.fd
 ```
-If firmware files are missing: `ls "$PREFIX/share/qemu" | grep edk2` — see [termux-packages](https://github.com/termux/termux-packages) or the Termux wiki for your build.
 
-8. First boot from ISO (1024 MiB RAM, 2 CPUs — tune with `nproc` and `free -m` on the host):
+Нужен файл из **`…/edk2/aarch64/`**, не из `…/edk2/arm/`. Нет файла: `find "$PREFIX/share" -name 'QEMU_VARS.fd'`.
+
+### 6. Первый запуск (ISO + диск)
+
+Подстройте `-m` / `-smp` под телефон; RAM гостя **> ~4 GiB** на части устройств падает.
+
+Вставляйте блок **целиком** (без разрыва `scsi-cd` и без отрыва `-` от `boot`):
+
 ```bash
 qemu-system-aarch64 \
   -machine virt \
@@ -55,7 +64,7 @@ qemu-system-aarch64 \
   -drive if=pflash,format=raw,file=$PWD/edk2-aarch64-vars.fd \
   -netdev user,id=n1,dns=8.8.8.8,hostfwd=tcp::2222-:22 \
   -device virtio-net,netdev=n1 \
-  -drive if=none,id=cd0,format=raw,media=cdrom,readonly=on,file=$PWD/alpine-virt-3.20.2-aarch64.iso \
+  -drive if=none,id=cd0,format=raw,media=cdrom,readonly=on,file=$PWD/alpine-virt-3.20.10-aarch64.iso \
   -device virtio-scsi-pci,id=scsi0 \
   -device scsi-cd,bus=scsi0.0,drive=cd0 \
   -drive if=none,id=hd0,file=$PWD/alpine.img,format=qcow2 \
@@ -63,42 +72,69 @@ qemu-system-aarch64 \
   -boot order=d \
   -nographic
 ```
-You can try `-cpu max` if QEMU accepts it. If allocating more than ~4 GiB RAM fails on some devices, lower `-m`.
 
-9. Log in as `root` (no password).
+Имя `.iso` в `file=$PWD/…` = как в шаге 3. Сообщения UEFI (TPM, `Image …`, `X64`) часто **шум** — ждите GRUB/консоль установщика.
 
-10. Network (accept defaults for DHCP on `eth0`):
+**Не грузится (Shell / Boot Manager):** пересоздать образы в **этой** папке, проверить имя ISO, вставить команду без битых переносов; в меню — **Boot Manager → CD/ISO**.
+
+```bash
+rm -f alpine.img edk2-aarch64-vars.fd
+qemu-img create -f qcow2 alpine.img 5G
+cp "$PREFIX/share/edk2/aarch64/QEMU_VARS.fd" ./edk2-aarch64-vars.fd
+truncate -s 64M ./edk2-aarch64-vars.fd
+```
+
+### 7. В госте: `root` (без пароля)
+
+### 8. Сеть
+
 ```bash
 setup-interfaces
+```
+Везде **Enter** по умолчанию (eth0, dhcp). Затем:
+
+```bash
 ifup eth0
 ```
 
-11. Fetch [answerfile](answerfile). Replace **`YOUR_GITHUB_USER`** / **`YOUR_REPO`** with your fork (and branch if not `main`), or copy `answerfile` from a local clone:
+### 9. `answerfile`
+
 ```bash
-wget -O answerfile "https://raw.githubusercontent.com/YOUR_GITHUB_USER/YOUR_REPO/main/answerfile"
+wget -O answerfile "https://raw.githubusercontent.com/ShiWarai/docker-in-termux/main/answerfile"
 ```
-> If DNS fails inside the installer, e.g. `wget: bad address '...'`, fix resolver first, for example:
-> ```bash
-> echo -e "nameserver 192.168.1.1\nnameserver 1.1.1.1" > /etc/resolv.conf
-> ```
 
-12. Confirm the install disk (see prerequisites): `lsblk`. Edit `DISKOPTS` in `answerfile` if it is not `/dev/vda`.
+Ошибка DNS в госте: `echo -e "nameserver 192.168.1.1\nnameserver 1.1.1.1" > /etc/resolv.conf`
 
-13. Serial console for QEMU `virt` on AArch64 (often **`ttyAMA0`**):
+### 10. Диск для `setup-alpine`
+
+В `answerfile` уже **`DISKOPTS=… /dev/vda`**. Проверка: `cat /proc/partitions` — нужен **vda** (образ), не **sr0**/loop. Иначе поправьте последнюю строку `answerfile`.
+
+### 11. Serial-консоль
+
 ```bash
 sed -i -E 's/(local kernel_opts)=.*/\1="console=ttyAMA0"/' /sbin/setup-disk
 ```
-If you get no login after reboot, try `console=ttyS0` instead.
 
-14. Install to disk:
+Нет логина после установки — попробовать **`console=ttyS0`**.
+
+### 12. Установка на диск
+
 ```bash
 setup-alpine -f answerfile
 ```
 
-15. `poweroff`
+### 13. Выключение гостя
 
-16. Boot installed system (no ISO):
 ```bash
+poweroff
+```
+
+### 14. Запуск без ISO
+
+ISO не подключаем. В том же каталоге создайте **`run_qemu.sh`** (`nano run_qemu.sh`):
+
+```bash
+#!/bin/bash
 qemu-system-aarch64 \
   -machine virt \
   -cpu cortex-a57 \
@@ -109,56 +145,44 @@ qemu-system-aarch64 \
   -netdev user,id=n1,dns=8.8.8.8,hostfwd=tcp::2222-:22 \
   -device virtio-net,netdev=n1 \
   -drive if=none,id=hd0,file=$PWD/alpine.img,format=qcow2 \
-  -device virtio-blk-pci,drive=hd0 \
+  -device virtio-blk-pci,drive=hd0,bootindex=0 \
   -nographic
 ```
 
-**Optional — `run_qemu.sh`** (same flags as step 16; keep in the same directory as `alpine.img` and `edk2-aarch64-vars.fd`):
+Сохранить: **Ctrl+X**, **Y**, **Enter**. Запуск:
+
 ```bash
-#!/bin/bash
-exec qemu-system-aarch64 \
-  -machine virt \
-  -cpu cortex-a57 \
-  -m 1024 \
-  -smp cpus=2 \
-  -drive if=pflash,format=raw,readonly=on,file=$PREFIX/share/qemu/edk2-aarch64-code.fd \
-  -drive if=pflash,format=raw,file=$PWD/edk2-aarch64-vars.fd \
-  -netdev user,id=n1,dns=8.8.8.8,hostfwd=tcp::2222-:22 \
-  -device virtio-net,netdev=n1 \
-  -drive if=none,id=hd0,file=$PWD/alpine.img,format=qcow2 \
-  -device virtio-blk-pci,drive=hd0 \
-  -nographic
+chmod +x run_qemu.sh && ./run_qemu.sh
 ```
-Then: `chmod +x run_qemu.sh` and `./run_qemu.sh`.
 
-17. In the guest — DNS and Docker:
+Дальше обычно **`./run_qemu.sh`** (или `bash run_qemu.sh`).
+
+**Shell / «UEFI Misc Device» после установки:** в Termux **Ctrl+a** **x**, снова шаг **5** (vars), затем **`./run_qemu.sh`**. Не помогло — шаг **12** или заново шаги **3–6** (ISO/образ/vars/первый запуск).
+
+### 15. Docker в госте
+
 ```bash
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 echo "nameserver 8.8.4.4" >> /etc/resolv.conf
-
 apk update && apk add docker
 service docker start
 rc-update add docker
 docker run hello-world
 ```
 
-# Native Docker without a VM (not this fork’s focus)
+## QEMU `-nographic`
 
-Docker directly in Termux usually needs **root** and a kernel with suitable **cgroups**, **namespaces**, and often **overlay** support. Many stock phone kernels are incomplete for that. The VM route above stays predictable.
+- **Ctrl+a** **x** — выход из эмулятора  
+- **Ctrl+a** **h** — справка QEMU  
 
-# Useful QEMU keys
-- `Ctrl+a` then `x`: quit emulation
-- `Ctrl+a` then `h`: QEMU console help
+## Прочее
 
-# Usage
-See [Docker documentation](https://docs.docker.com/) for day-to-day container use.
+Нативный Docker в Termux без ВМ на стоковых прошивках обычно **не вариант** (ядро, root, cgroups).
 
-# Contributing
-Issues and pull requests are welcome.
+Дальше — [документация Docker](https://docs.docker.com/).
 
-# Acknowledgment
-- Inspired by: https://gist.github.com/oofnikj/e79aef095cd08756f7f26ed244355d62  
-- Upstream-style dual-arch guide: [cyberkernelofficial/docker-in-termux](https://github.com/cyberkernelofficial/docker-in-termux) (this fork is aarch64-only).
+Issues/PR приветствуются.
 
-# License
-[MIT License](LICENSE).
+**Источники:** [gist oofnikj](https://gist.github.com/oofnikj/e79aef095cd08756f7f26ed244355d62), upstream [cyberkernelofficial/docker-in-termux](https://github.com/cyberkernelofficial/docker-in-termux) (x86_64 + aarch64; этот форк — aarch64).
+
+**Лицензия:** [LICENSE](LICENSE), [LICENSE.RU](LICENSE.RU).
