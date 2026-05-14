@@ -50,7 +50,7 @@ truncate -s 64M ./edk2-aarch64-vars.fd
 
 ### 6. Первый запуск (ISO + диск)
 
-Подстройте `-m` / `-smp` под телефон; RAM гостя **> ~4 GiB** на части устройств падает.
+Подстройте `-m` / `-smp` под телефон; RAM гостя **> ~4 GiB** на части устройств падает. Для Huawei Y8p рабочий пример: **2048 MiB / 4 CPU**.
 
 Вставляйте блок **целиком** (без разрыва `scsi-cd` и без отрыва `-` от `boot`):
 
@@ -58,12 +58,12 @@ truncate -s 64M ./edk2-aarch64-vars.fd
 qemu-system-aarch64 \
   -machine virt \
   -cpu cortex-a57 \
-  -m 1024 \
-  -smp cpus=2 \
+  -m 2048 \
+  -smp cpus=4 \
   -drive if=pflash,format=raw,readonly=on,file=$PREFIX/share/qemu/edk2-aarch64-code.fd \
   -drive if=pflash,format=raw,file=$PWD/edk2-aarch64-vars.fd \
   -netdev user,id=n1,dns=8.8.8.8,hostfwd=tcp::2222-:22 \
-  -device virtio-net,netdev=n1 \
+  -device virtio-net,netdev=n1,romfile= \
   -drive if=none,id=cd0,format=raw,media=cdrom,readonly=on,file=$PWD/alpine-virt-3.20.10-aarch64.iso \
   -device virtio-scsi-pci,id=scsi0 \
   -device scsi-cd,bus=scsi0.0,drive=cd0 \
@@ -73,7 +73,7 @@ qemu-system-aarch64 \
   -nographic
 ```
 
-Имя `.iso` в `file=$PWD/…` = как в шаге 3. Сообщения UEFI (TPM, `Image …`, `X64`) часто **шум** — ждите GRUB/консоль установщика.
+Имя `.iso` в `file=$PWD/…` = как в шаге 3. `romfile=` у сети отключает EFI option ROM, из-за которого UEFI может писать `Image type X64`. Остальные сообщения UEFI (TPM, `Image …`) обычно шум — ждите GRUB/консоль установщика.
 
 **Не грузится (Shell / Boot Manager):** пересоздать образы в **этой** папке, проверить имя ISO, вставить команду без битых переносов; в меню — **Boot Manager → CD/ISO**.
 
@@ -138,12 +138,12 @@ ISO не подключаем. В том же каталоге создайте 
 qemu-system-aarch64 \
   -machine virt \
   -cpu cortex-a57 \
-  -m 1024 \
-  -smp cpus=2 \
+  -m 2048 \
+  -smp cpus=4 \
   -drive if=pflash,format=raw,readonly=on,file=$PREFIX/share/qemu/edk2-aarch64-code.fd \
   -drive if=pflash,format=raw,file=$PWD/edk2-aarch64-vars.fd \
   -netdev user,id=n1,dns=8.8.8.8,hostfwd=tcp::2222-:22 \
-  -device virtio-net,netdev=n1 \
+  -device virtio-net,netdev=n1,romfile= \
   -drive if=none,id=hd0,file=$PWD/alpine.img,format=qcow2 \
   -device virtio-blk-pci,drive=hd0,bootindex=0 \
   -nographic
